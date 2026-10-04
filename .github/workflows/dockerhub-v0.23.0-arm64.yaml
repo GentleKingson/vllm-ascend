@@ -1,0 +1,114 @@
+name: Docker Hub v0.23.0 A2 ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/build-v0.23.0-arm64
+    paths:
+      - .github/workflows/dockerhub-v0.23.0-arm64.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dockerhub-vllm-ascend-v0.23.0-arm64
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'GentleKingson/vllm-ascend'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 360
+    steps:
+      - name: Check Docker Hub secret
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo '::error::Configure Repository secret DOCKERHUB_TOKEN (not a Repository variable).'
+            exit 1
+          fi
+
+      - name: Check out releases/v0.23.0 source
+        uses: actions/checkout@v4
+        with:
+          ref: 45b0ee13eb22c5b7b43166665548dff89f009529
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prepare ARM64 runner
+        run: |
+          test "$(uname -m)" = aarch64
+          # These are preinstalled SDKs on this disposable GitHub-hosted runner.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/share/powershell
+          df -h /
+          available=$(df -B1 --output=avail / | tail -1 | tr -d ' ')
+          if [ "$available" -lt 42949672960 ]; then
+            echo '::error::Need at least 40 GiB free disk for CANN and the build. Select a larger ARM64 runner.'
+            exit 1
+          fi
+
+      - name: Pin CANN image and limit build parallelism
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('Dockerfile').read_text()
+          base = 'FROM quay.io/ascend/cann:9.1.0-910b-ubuntu22.04-py3.12'
+          assert source.count(base) == 1
+          source = source.replace(
+              base,
+              base + '@sha256:0033becbf14a72a2fcfd4614b242709184986652a3cd807cf3b7813aadb65116\nARG MAX_JOBS=4',
+          )
+          Path('Dockerfile.dockerhub').write_text(source)
+          PY
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: kingsonho
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build A2 ARM64 image and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.dockerhub
+          platforms: linux/arm64
+          push: true
+          tags: kingsonho/vllm-ascend:v0.23.0
+          provenance: false
+          build-args: |
+            SOC_VERSION=ascend910b1
+            COMPILE_CUSTOM_KERNELS=1
+            MAX_JOBS=4
+            PIP_INDEX_URL=https://pypi.org/simple
+            VLLM_COMMIT=0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665
+          labels: |
+            org.opencontainers.image.source=https://github.com/GentleKingson/vllm-ascend
+            org.opencontainers.image.revision=45b0ee13eb22c5b7b43166665548dff89f009529
+            org.opencontainers.image.version=v0.23.0
+
+      - name: Verify published image architecture
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          image="kingsonho/vllm-ascend@${IMAGE_DIGEST}"
+          docker buildx imagetools inspect "$image" --format '{{json .Image}}' > /tmp/image-config.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path('/tmp/image-config.json').read_text())
+          assert config['architecture'] == 'arm64', config['architecture']
+          assert config['os'] == 'linux', config['os']
+          PY
+          {
+            echo 'Published: `kingsonho/vllm-ascend:v0.23.0`'
+            echo "Digest: \`${IMAGE_DIGEST}\`"
+            echo 'Platform: linux/arm64; Ascend A2 (ascend910b1).'
+            echo 'NPU inference must be verified on an A2 machine.'
+          } >> "$GITHUB_STEP_SUMMARY"
