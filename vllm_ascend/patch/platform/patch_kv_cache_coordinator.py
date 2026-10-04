@@ -117,7 +117,12 @@ class AscendHybridKVCacheCoordinator(HybridKVCacheCoordinator):
         self.eagle_group_ids: set[int] = {i for i, g in enumerate(kv_cache_config.kv_cache_groups) if g.is_eagle_group}
         # Conservatively fall back to flag all groups when no group is flagged.
         if use_eagle and not self.eagle_group_ids:
-            self.eagle_group_ids = set(range(len(kv_cache_config.kv_cache_groups)))
+            has_mamba = any(
+                isinstance(g.kv_cache_spec, MambaSpec)
+                for g in kv_cache_config.kv_cache_groups
+            )
+            if not has_mamba:
+                self.eagle_group_ids = set(range(len(kv_cache_config.kv_cache_groups)))
 
         extra_mgr_kwargs: dict = {"scheduler_block_size": scheduler_block_size}
         self.single_type_managers = tuple(
