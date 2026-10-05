@@ -35,6 +35,7 @@ jobs:
         with:
           ref: 45b0ee13eb22c5b7b43166665548dff89f009529
           fetch-depth: 0
+          submodules: recursive
           persist-credentials: false
 
       - name: Prepare ARM64 runner
@@ -49,7 +50,7 @@ jobs:
             exit 1
           fi
 
-      - name: Pin CANN image and limit build parallelism
+      - name: Prepare Dockerfile and enforce vLLM release version
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -60,6 +61,19 @@ jobs:
               base,
               base + '@sha256:0033becbf14a72a2fcfd4614b242709184986652a3cd807cf3b7813aadb65116\nARG MAX_JOBS=4',
           )
+          # Clone by release tag so setuptools-scm can derive the runtime version.
+          # Independently verify the tag still resolves to the reviewed commit.
+          install_marker = '# In x86, triton will be installed by vllm.'
+          assert source.count(install_marker) == 1
+          source = source.replace(
+              install_marker,
+              'RUN test "$(git -C /vllm-workspace/vllm rev-parse HEAD)" = '
+              '"0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665"\n\n' + install_marker,
+          )
+          # Run after all package installs, before BuildKit exports/pushes the image.
+          source += "\nRUN python3 -c \"import vllm; from packaging.version import Version; " \
+              "print('vLLM runtime version:', vllm.__version__); " \
+              "assert Version(vllm.__version__) == Version('0.23.0'), vllm.__version__\"\n"
           Path('Dockerfile.dockerhub').write_text(source)
           PY
 
@@ -87,7 +101,8 @@ jobs:
             COMPILE_CUSTOM_KERNELS=1
             MAX_JOBS=4
             PIP_INDEX_URL=https://pypi.org/simple
-            VLLM_COMMIT=0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665
+            VLLM_TAG=v0.23.0
+            VLLM_COMMIT=
           labels: |
             org.opencontainers.image.source=https://github.com/GentleKingson/vllm-ascend
             org.opencontainers.image.revision=45b0ee13eb22c5b7b43166665548dff89f009529
