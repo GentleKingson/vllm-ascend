@@ -71,9 +71,12 @@ jobs:
               '"0fc695fc6d1d82e9a5ac6835ac8e4e1c83703665"\n\n' + install_marker,
           )
           # Run after all package installs, before BuildKit exports/pushes the image.
-          source += "\nRUN python3 -c \"import vllm; from packaging.version import Version; " \
-              "print('vLLM runtime version:', vllm.__version__); " \
-              "assert Version(vllm.__version__) == Version('0.23.0'), vllm.__version__\"\n"
+          # Read the same generated version file used by vllm.version without
+          # importing vllm/torch, which loads NPU drivers absent on this runner.
+          source += "\nRUN python3 -c \"import runpy; from packaging.version import Version; " \
+              "version = runpy.run_path('/vllm-workspace/vllm/vllm/_version.py')['__version__']; " \
+              "print('vLLM runtime version:', version); " \
+              "assert Version(version) == Version('0.23.0'), version\"\n"
           Path('Dockerfile.dockerhub').write_text(source)
           PY
 
